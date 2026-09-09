@@ -27,7 +27,7 @@ curl -s http://localhost:8787/status   # {"plugin_connected": true/false, "pendi
 
 If the bridge isn't running: `bash start-bridge.sh` (runs in tmux `figmosha-bridge`; logs at `/tmp/figmosha-bridge.log`).
 
-If the plugin isn't connected: tell the user — `Plugins → Development → Figmosha Bridge → Run`.
+If the plugin isn't connected: tell the user — `Plugins → Development → Figmosha → Run`.
 
 ## Helpers (available as `h.*` in every exec)
 
@@ -118,6 +118,71 @@ The bridge **adds a `hint` field** when it recognizes a common error (fills/stro
 
 ## Conventions
 
+### Never edit the user's frame — always work on a duplicate
+
+**Rule: any change to existing design goes onto a clone, never the original.** The user's frame is the reference they compare against; Figma undo doesn't survive a plugin session, so an in-place edit is effectively unrecoverable.
+
+**The duplicate stays on the same page as the original — always the `figmosha` page (`32907:1962`).** That page is the scratch space; every frame you create, clone, or edit belongs there and nowhere else.
+
+Never use `figma.currentPage.appendChild()` for this. `figma.currentPage` is whatever page the user last clicked in the Figma UI — it drifts between execs — so that call silently *moves* the clone onto an unrelated page. `clone()` already places the copy as a sibling of the source; just reposition it, or append to the source's own parent explicitly.
+
+**Name the copy `<name> v2`** — bump the number for each further iteration (`v3`, `v4`…). **Never put an em dash (`—`) in a Figma layer name.** It reads as a separator in the layers panel and makes names impossible to scan. Use a space, or parentheses for a qualifier: `shared search manage v2`, `partner avatars v3 (avatar + name)`.
+
+```js
+const src = await h.node(id)
+const copy = src.clone()
+copy.name = src.name + ' v2'         // or ' v3', matching the iteration — no em dash
+src.parent.appendChild(copy)         // explicit parent — NOT figma.currentPage
+copy.x = src.x + src.width + 120     // park it to the right, don't overlap
+copy.y = src.y
+```
+
+To move a node across pages deliberately, `await page.loadAsync()` on both pages first, then `targetPage.appendChild(node)`.
+
+Confirm placement before reporting done — walk up to the `PAGE` and check the name:
+
+```js
+const pageOf = n => { let p = n; while (p && p.type !== 'PAGE') p = p.parent; return p && p.name }
+```
+
+Then build the old-id → new-id map once and reference the **new** ids for every subsequent edit:
+
+```js
+const M = {}; (function w(a,b){ M[a.id]=b.id; if(a.children) a.children.forEach((c,i)=>w(c,b.children[i])); })(src, copy)
+```
+
+Capture that map in one exec and reuse the returned ids — the parallel walk breaks as soon as you reorder or add children.
+
+Before reporting done, **verify the original is untouched** (width/height/key child sizes) and say so.
+
+### Coordinates: `x`/`y` are relative to the parent frame
+
+A node's `x`/`y` are in its parent **frame's** space — including nodes inside a `GROUP` (groups don't create their own coordinate space). Adding the parent frame's own `x` sends the node off-canvas, and with `clipsContent: true` it silently vanishes.
+
+```js
+bar.x = 0; bar.y = frame.height - bar.height   // correct
+bar.x = frame.x                                 // wrong — lands at the frame's page coordinate
+```
+
+Verify placement with absolute boxes, not raw `x`/`y`:
+
+```js
+const rel = n => ({ x: n.absoluteBoundingBox.x - frame.absoluteBoundingBox.x,
+                    y: n.absoluteBoundingBox.y - frame.absoluteBoundingBox.y })
+```
+
+### Always re-check overlaps after a change — and fix them
+
+**Any exec that moves, resizes, adds or clones a node must end with an overlap sweep of that node's siblings, and fix what it finds before reporting done.** Growing a component set or a section is the usual culprit: it silently swallows whatever sat below it, and nothing errors.
+
+```js
+const sibs = node.parent.children.map(n => ({ n, x: n.x, y: n.y, w: n.width, h: n.height }))
+const hits = sibs.filter(a => sibs.some(b => a.n !== b.n &&
+  a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h))
+```
+
+**Fix by moving what you changed, not its neighbours.** If a set grew taller, shift it *up* by the delta so its bottom edge — and every gap the user arranged below it — stays put. Never let a naive "scan downward for free space" packer relocate a neighbour; it lands things thousands of px from where they belong. Report any overlap you deliberately leave (an intentional overlay on a screenshot, say) rather than silently moving it.
+
 ### Use async APIs
 
 The plugin runs under dynamic-page documentAccess where lookups are async:
@@ -143,6 +208,93 @@ f.itemSpacing = 16               // 5. spacing/padding
 f.paddingTop = 24
 ```
 
+### Anything that isn't the design itself goes in a named SECTION
+
+Prototype states, animation frames, variant explorations, before/after pairs, scratch experiments — none of it belongs loose on the canvas next to the real screens. Wrap each cluster in a `SectionNode` named for what it is (`animation`, `furnished — variations`, `scroll states`). Loose frames read as part of the design and nobody can tell later which ones were the deliverable.
+
+```js
+const sec = figma.createSection()
+parent.appendChild(sec)                 // a page, or another section — sections nest
+sec.name = 'animation'
+sec.x = 2412; sec.y = 105
+sec.resizeWithoutConstraints(1030, 972) // sections use resizeWithoutConstraints, not resize
+sec.appendChild(frameA); frameA.x = 80;  frameA.y = 80   // child x/y are section-relative
+sec.appendChild(frameB); frameB.x = 575; frameB.y = 80
+```
+
+- **Child coordinates are relative to the section**, like a frame. Reparenting without repositioning throws nodes thousands of px away.
+- **Size the section yourself** — it does not hug its contents. Leave ~80px padding so the label doesn't collide with the frames.
+- **Check for overlap** with the section's new siblings before reporting done, and grow the parent if needed.
+- **Prototype reactions survive reparenting** — verify anyway, with `node.reactions`.
+
+### Use the file's text styles, not raw font properties
+
+When you create or restyle a TEXT node, **attach an existing text style** rather than setting `fontName` / `fontSize` by hand. A hand-set node looks identical today and drifts the moment the style is updated — and it's invisible in the design-system audit.
+
+```js
+// Bad — right pixels, detached from the system
+t.fontName = { family: 'SF Pro Display', style: 'Bold' }
+t.fontSize = 28
+
+// Good — find the style whose properties already match, then attach it
+const styles = await figma.getLocalTextStylesAsync()
+const s = styles.find(x => x.name === 'header/28 pullup')
+await h.withFonts(root, async () => { await t.setTextStyleIdAsync(s.id) })
+```
+
+**Only attach a style that is an exact match** — same family, weight, size, line-height, letter-spacing, case and decoration. Attaching a near-match silently changes the design. Compare on a signature and skip anything that isn't identical:
+
+```js
+const sig = o => [o.family, o.style, o.size,
+  o.lh.unit === 'AUTO' ? 'AUTO' : o.lh.value + o.lh.unit,
+  o.ls.value + o.ls.unit, o.tc, o.td].join('|')
+```
+
+Before styling anything, list what exists — `await figma.getLocalTextStylesAsync()`. Some names collide on identical properties (`button` and `16 semibold` are both SF Pro Display Semibold 16); pick by role, and if you genuinely can't tell, report the ambiguity instead of guessing.
+
+Guard against mixed-styling nodes: `t.fontName` and `t.fontSize` return a `symbol` when a node has more than one style inside it. Skip those.
+
+Same principle for colour: bind to a variable rather than writing a hex fill.
+
+### Smart Animate states: identical structure, or it glitches
+
+Two frames wired with `SMART_ANIMATE` only interpolate a property when **both frames have that property on a layer with the same name**. Anything present in one frame and absent in the other **pops** instead of animating.
+
+Build the second state by **cloning the first**, then changing values — never by assembling it separately.
+
+```js
+// Bad — fill exists only in the scrolled state, so it snaps in mid-transition
+top.fills = []
+scrolled.fills = [{type:'SOLID', color:NAVY, opacity:0.55}]
+
+// Good — same fill and same effect in both; only the value differs
+top.fills      = [{type:'SOLID', color:NAVY, opacity:0}]
+top.effects    = [{type:'BACKGROUND_BLUR', radius:32, visible:true}]
+scrolled.fills = [{type:'SOLID', color:NAVY, opacity:0.55}]
+scrolled.effects = [{type:'BACKGROUND_BLUR', radius:32, visible:true}]
+```
+
+Checklist before wiring — for every layer that moves between states:
+
+- **Same layer name and same parent chain.** Renaming breaks the match silently.
+- **Fills, strokes, effects exist in both** — use opacity `0`, not an empty array, to hide something.
+- **Fixed sizes, not hug**, on anything whose content changes size. A hug header is `61pt` with a 28px title and `60pt` with a 20px title — that 1px difference reads as a jitter. Set `counterAxisSizingMode = 'FIXED'` and one explicit height in both.
+- **Same corner radii, padding and alignment**, even when they look irrelevant.
+- **Same sizing modes.** `AUTO` in one frame and `FIXED` in the other animates from the wrong box.
+
+Wire reactions with `setReactionsAsync` (the `reactions` setter is read-only):
+
+```js
+await node.setReactionsAsync([{
+  trigger: {type:'ON_CLICK'},
+  actions: [{ type:'NODE', destinationId: other.id, navigation:'NAVIGATE',
+    transition: {type:'SMART_ANIMATE', easing:{type:'EASE_IN_AND_OUT'}, duration:0.4},
+    preserveScrollPosition: false }]
+}])
+```
+
+Scroll states need a **device-height frame** (375×812) with `clipsContent`, not the tall content artboard. Make the sheet a fixed clipping viewport and give `sheet-content` `layoutPositioning = 'ABSOLUTE'` with a negative `y` — that's the scroll offset. Keep the sheet's resting top edge visible so it still reads as a pull-up rather than a full-screen page.
+
 ### Two-stage workflow for big builds
 
 For complex builds (component sets with many variants + variable binding): split into Step 1 = build structure with hardcoded RGB; Step 2 = walk nodes by `name` and bind via `h.bF`/`h.bS`/`h.bN`. Verify each step independently.
@@ -159,6 +311,27 @@ return root.findAll(n => n.type === "TEXT").map(t => t.characters)
 ```
 
 `node.exportAsync({format:"PNG"})` exists if you genuinely need pixels — returns bytes. Don't use it as "is the code working" check.
+
+**Exception — visual deliverables.** When the output is a *design* the user will look at (a new screen, a redesigned frame, a bottom bar), take **one** export at the end and actually look at it. Data checks pass on things that render broken: a node placed off-canvas by a coordinate mistake, a text node that wraps because its box is too narrow, white-on-yellow that measures fine and reads terribly. Verify with data throughout, then confirm with one render.
+
+Round-trip the bytes to a file — the CLI prints the base64 string, so extract the longest base64 run from the output and decode it:
+
+```bash
+figmosha exec "
+const f = await h.node('ID');
+const b = await f.exportAsync({format:'PNG', constraint:{type:'SCALE', value:1}});
+let s=''; const CH=8192;
+for(let i=0;i<b.length;i+=CH) s += String.fromCharCode.apply(null, b.subarray(i,i+CH));
+return btoa(s);
+" > out.txt
+python3 -c "
+import re,base64
+b=max(re.findall(r'[A-Za-z0-9+/=]{200,}', open('out.txt').read()), key=len)
+open('frame.png','wb').write(base64.b64decode(b+'='*(-len(b)%4)))
+"
+```
+
+Crop with PIL to inspect a specific region (a bar, a header) instead of squinting at a 1600px-tall export.
 
 ## When something looks wrong
 

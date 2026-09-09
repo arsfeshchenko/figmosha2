@@ -1,4 +1,15 @@
-figma.showUI(__html__, { width: 360, height: 260, title: "Figmosha Bridge" });
+figma.showUI(__html__, { width: 360, height: 260, title: "Figmosha" });
+
+// Window sizes for the two UI modes. Compact keeps only the connection dot visible.
+const UI_SIZE = { full: { w: 360, h: 260 }, compact: { w: 220, h: 28 } };
+
+// Restore the mode the user left the plugin in.
+(async () => {
+  let compact = false;
+  try { compact = !!(await figma.clientStorage.getAsync("compactMode")); } catch (e) {}
+  if (compact) figma.ui.resize(UI_SIZE.compact.w, UI_SIZE.compact.h);
+  figma.ui.postMessage({ type: "init-mode", compact });
+})();
 
 function safeStringify(value) {
   if (value === undefined) return null;
@@ -154,6 +165,12 @@ const HELPERS = {
 // ──────────────────────────────────────────────────────────────────────────
 
 figma.ui.onmessage = async (msg) => {
+  if (msg.type === "ui-mode") {
+    const s = msg.compact ? UI_SIZE.compact : UI_SIZE.full;
+    figma.ui.resize(s.w, s.h);
+    try { await figma.clientStorage.setAsync("compactMode", !!msg.compact); } catch (e) {}
+    return;
+  }
   if (msg.type !== "exec") return;
   const { id, code } = msg;
 

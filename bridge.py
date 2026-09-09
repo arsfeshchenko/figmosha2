@@ -68,14 +68,31 @@ def find_hint(error_text):
 
 async def plugin_ws_handler(request: web.Request) -> web.WebSocketResponse:
     global PLUGIN_WS
-    ws = web.WebSocketResponse(heartbeat=20, max_msg_size=16 * 1024 * 1024)
+    # heartbeat=N gives the peer N/2 seconds to answer a PING. Figma throttles
+    # timers in an unfocused plugin window, so the old 20 (=10s deadline) reaped
+    # perfectly healthy connections. 60 (=30s) tolerates the throttling and still
+    # clears a genuinely dead socket inside a minute.
+    ws = web.WebSocketResponse(heartbeat=60, max_msg_size=16 * 1024 * 1024)
     await ws.prepare(request)
 
+    # Newest connection wins. A half-open socket (Figma restarted, plugin window
+    # closed, machine slept) can sit there with .closed == False forever, and the
+    # old "first wins" policy locked the real plugin out while /status still
+    # reported healthy. Evict the incumbent instead.
     if PLUGIN_WS is not None and not PLUGIN_WS.closed:
-        print(f"[plugin] rejecting second connection from {request.remote}")
-        await ws.send_str(json.dumps({"type": "error", "text": "another plugin instance already connected"}))
-        await ws.close(code=1008, message=b"already connected")
-        return ws
+        old = PLUGIN_WS
+        print(f"[plugin] superseding previous connection with {request.remote}")
+        try:
+            # Tell it it lost the seat BEFORE closing, so its UI stops the 2s
+            # retry loop. Without this, two live plugin instances evict each
+            # other forever and both flicker connected/disconnected.
+            await old.send_str(json.dumps({"type": "superseded"}))
+        except Exception:
+            pass
+        try:
+            await old.close(code=1012, message=b"superseded by newer plugin instance")
+        except Exception as e:
+            print(f"[plugin] error closing stale socket: {e}")
 
     PLUGIN_WS = ws
     print(f"[plugin] connected from {request.remote}")
@@ -114,22 +131,27 @@ async def plugin_ws_handler(request: web.Request) -> web.WebSocketResponse:
                 if not entry["future"].done():
                     entry["future"].set_result(m)
     finally:
+        # Only the *active* socket owns PLUGIN_WS and the in-flight requests. A
+        # superseded handler must not clear either — its PENDING entries now
+        # belong to the connection that replaced it.
         if PLUGIN_WS is ws:
             PLUGIN_WS = None
-        print("[plugin] disconnected")
-        # Fail any in-flight requests so clients don't hang
-        for rid, entry in list(PENDING.items()):
-            if not entry["future"].done():
-                entry["future"].set_result({
-                    "id": rid, "type": "error", "text": "plugin disconnected mid-request",
-                })
+            print("[plugin] disconnected")
+            # Fail any in-flight requests so clients don't hang
+            for rid, entry in list(PENDING.items()):
+                if not entry["future"].done():
+                    entry["future"].set_result({
+                        "id": rid, "type": "error", "text": "plugin disconnected mid-request",
+                    })
+        else:
+            print("[plugin] stale socket closed")
     return ws
 
 
 async def exec_handler(request: web.Request) -> web.Response:
     if PLUGIN_WS is None or PLUGIN_WS.closed:
         return web.json_response(
-            {"ok": False, "error": "plugin not connected — open Figmosha Bridge in Figma"},
+            {"ok": False, "error": "plugin not connected — open Figmosha in Figma"},
             status=503,
         )
 

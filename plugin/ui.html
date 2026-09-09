@@ -2,31 +2,70 @@
 <html>
 <head>
 <style>
+  :root {
+    --bg: #171717;
+    --surface: #1f1f1f;
+    --text: #e8e8e8;
+    --muted: #8a8a8a;
+    --line: #2e2e2e;
+  }
   * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 12px; font-size: 13px; color: #222; }
-  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  #status { padding: 3px 8px; border-radius: 10px; font-family: monospace; font-size: 11px; }
-  .ok { background: #d4f4dd; color: #0a7d2f; }
-  .err { background: #ffe0e0; color: #b00020; }
-  .pending { background: #fff3cd; color: #856404; }
-  #log { background: #f5f5f5; padding: 8px; border-radius: 4px; height: 180px; overflow-y: auto; font-family: monospace; font-size: 11px; white-space: pre-wrap; margin: 0; }
-  .muted { color: #777; font-size: 11px; }
+  html, body { background: var(--bg); }
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 12px; font-size: 13px; color: var(--text); }
+  .bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  #dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: #d4a017; }
+  #dot.ok { background: #14ae5c; }
+  #dot.err { background: #e5484d; }
+  #dot.pending { background: #d4a017; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+  #state { font-weight: 600; }
+  #server { color: var(--muted); font-size: 11px; margin-left: auto; }
+  #toggle, #refresh { flex: none; border: 1px solid var(--line); background: transparent; border-radius: 5px; width: 24px; height: 24px;
+            cursor: pointer; font-size: 12px; line-height: 1; color: var(--muted); padding: 0; }
+  #toggle:hover, #refresh:hover { background: var(--surface); color: var(--text); }
+  #refresh { font-size: 14px; }
+  #refresh.spin { animation: spin .6s linear; }
+  @keyframes spin { from { transform: rotate(0) } to { transform: rotate(360deg) } }
+  #log { background: var(--surface); color: #b9b9b9; padding: 8px; border-radius: 4px; height: 180px; overflow-y: auto;
+         font-family: monospace; font-size: 11px; white-space: pre-wrap; margin: 0; }
+  #log::-webkit-scrollbar { width: 8px; }
+  #log::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 4px; }
+
+  /* Compact mode — a thin strip that reads as part of Figma's own header.
+     The native title bar can't be drawn into (it's Figma chrome, and changing its
+     title needs showUI() again, which reloads the iframe and drops the socket),
+     so instead we collapse to the smallest strip that still shows the dot. */
+  body.compact { padding: 0 8px; height: 28px; display: flex; align-items: center; }
+  body.compact #server, body.compact #log { display: none; }
+  body.compact .bar { margin: 0; width: 100%; gap: 6px; }
+  body.compact #dot { width: 8px; height: 8px; }
+  body.compact #state { font-size: 11px; font-weight: 400; color: var(--muted); }
+  body.compact #refresh { margin-left: auto; width: 18px; height: 18px; font-size: 12px; border: none; background: transparent; }
+  body.compact #toggle { width: 18px; height: 18px; font-size: 11px; border: none; background: transparent; }
+  body.compact #refresh:hover, body.compact #toggle:hover { background: var(--surface); }
 </style>
 </head>
 <body>
-  <div class="row">
-    <span>bridge:</span>
-    <span id="status" class="pending">connecting…</span>
-    <span class="muted" id="server">ws://localhost:8787/plugin</span>
+  <div class="bar">
+    <span id="dot" class="pending"></span>
+    <span id="state">connecting…</span>
+    <span id="server">ws://localhost:8787/plugin</span>
+    <button id="refresh" title="Reconnect to bridge">&#8635;</button>
+    <button id="toggle" title="Compact mode">–</button>
   </div>
   <pre id="log">[ui] booting</pre>
 
 <script>
 const SERVER = "ws://localhost:8787/plugin";
-const statusEl = document.getElementById("status");
+const dotEl = document.getElementById("dot");
+const stateEl = document.getElementById("state");
 const logEl = document.getElementById("log");
+const toggleEl = document.getElementById("toggle");
+const refreshEl = document.getElementById("refresh");
 let ws = null;
 let reconnectTimer = null;
+let compact = false;
+let superseded = false;   // set when the bridge hands the seat to a newer instance
 const recentLog = [];
 
 function log(line) {
@@ -38,9 +77,37 @@ function log(line) {
 }
 
 function setStatus(text, cls) {
-  statusEl.textContent = text;
-  statusEl.className = cls;
+  stateEl.textContent = text;
+  dotEl.className = cls;
+  document.body.dataset.state = text;   // compact mode renders this via ::after
 }
+
+function applyMode(next, persist) {
+  compact = next;
+  document.body.classList.toggle("compact", compact);
+  toggleEl.textContent = compact ? "+" : "–";
+  toggleEl.title = compact ? "Expand" : "Compact mode";
+  if (persist) parent.postMessage({ pluginMessage: { type: "ui-mode", compact } }, "*");
+}
+
+toggleEl.onclick = () => applyMode(!compact, true);
+
+// Force a fresh socket. Detach the handlers first so the old ws's onclose can't
+// schedule a competing reconnect on top of the one we're starting here.
+refreshEl.onclick = () => {
+  refreshEl.classList.remove("spin");
+  void refreshEl.offsetWidth;          // restart the CSS animation
+  refreshEl.classList.add("spin");
+  log("[ws] manual reconnect");
+  superseded = false;
+  clearTimeout(reconnectTimer);
+  if (ws) {
+    ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+    try { ws.close(); } catch (e) {}
+    ws = null;
+  }
+  connect();
+};
 
 function shortId(id) {
   return id ? String(id).slice(0, 8) : "?";
@@ -74,6 +141,11 @@ function connect() {
       parent.postMessage({ pluginMessage: { type: "exec", id: msg.id, code: msg.code } }, "*");
     } else if (msg.type === "ping") {
       try { ws.send(JSON.stringify({ type: "pong" })); } catch (e) {}
+    } else if (msg.type === "superseded") {
+      // Another plugin instance took the bridge. Stop retrying — otherwise the
+      // two instances evict each other every 2s and both sit there flickering.
+      superseded = true;
+      log("[ws] superseded by another plugin instance");
     }
   };
 
@@ -83,7 +155,12 @@ function connect() {
   };
 
   ws.onclose = () => {
-    setStatus("disconnected, retrying…", "err");
+    if (superseded) {
+      setStatus("inactive — another instance", "err");
+      log("[ws] not retrying; press ↻ to take over");
+      return;
+    }
+    setStatus("disconnected", "err");
     log("[ws] disconnected");
     reconnectTimer = setTimeout(connect, 2000);
   };
@@ -92,6 +169,10 @@ function connect() {
 window.onmessage = (e) => {
   const m = e.data && e.data.pluginMessage;
   if (!m) return;
+
+  // From code.js on boot — restore the saved mode without re-persisting it.
+  if (m.type === "init-mode") { applyMode(!!m.compact, false); return; }
+
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     log(`[drop] ws not open, ${m.type} id=${shortId(m.id)}`);
     return;

@@ -79,7 +79,7 @@ python -m venv venv
 3. Top menu → **Plugins** → **Development** → **Import plugin from manifest…**
 4. Select `plugin/manifest.json` from this repo
 
-Figma registers "Figmosha Bridge" under `Plugins → Development`. You only do this once.
+Figma registers "Figmosha" under `Plugins → Development`. You only do this once.
 
 **WSL2 note**: if your repo lives in WSL but Figma runs on Windows native, copy `plugin/` to a Windows-accessible path first:
 
@@ -113,7 +113,7 @@ The server listens on `127.0.0.1:8787`. Output:
 
 ### 5. Run the plugin in Figma
 
-In Figma Desktop: **Plugins** → **Development** → **Figmosha Bridge** → **Run**.
+In Figma Desktop: **Plugins** → **Development** → **Figmosha** → **Run**.
 
 A small window appears: **bridge: connected** (green). In the server terminal you'll see `[plugin] connected from 127.0.0.1`. You're live.
 
@@ -140,7 +140,7 @@ If all three work — you're done.
 
 ```bash
 bash start-bridge.sh   # or however you start the bridge
-# In Figma: Plugins → Development → Figmosha Bridge → Run
+# In Figma: Plugins → Development → Figmosha → Run
 ```
 
 The bridge survives SSH disconnects and terminal closes (tmux). It does **not** survive OS reboot or WSL shutdown — restart it after either.
@@ -240,7 +240,7 @@ Currently hints cover: fills/strokes variable binding, frozen arrays, missing ma
 | Symptom | Cause | Fix |
 |---|---|---|
 | `connection refused` from CLI | Server not running | `bash start-bridge.sh` (or run `bridge.py` in a terminal) |
-| `plugin not connected` (503) | Plugin window closed | Plugins → Development → Figmosha Bridge → Run |
+| `plugin not connected` (503) | Plugin window closed | Plugins → Development → Figmosha → Run |
 | Plugin says `disconnected, retrying…` | Server is down or restarting | Start it; plugin auto-reconnects within 2 s |
 | 504 timeout | Code threw silently or `await` never resolved | Close the plugin (X), Run again. Increase `--timeout` for legitimately long ops |
 | `permission not specified in manifest` | API needs a permission not declared in `manifest.json` | Add to `permissions` array, sync to Windows path if applicable, **re-import** plugin |
