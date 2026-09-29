@@ -25,7 +25,7 @@ curl -s -X POST http://localhost:8787/exec \
 curl -s http://localhost:8787/status   # {"plugin_connected": true/false, "pending": 0}
 ```
 
-If the bridge isn't running: `bash start-bridge.sh` (runs in tmux `figmosha-bridge`; logs at `/tmp/figmosha-bridge.log`).
+If the bridge isn't running: on this Mac, `./venv/bin/python bridge.py` in the background (no tmux here); on the WSL setup, `bash start-bridge.sh` (tmux `figmosha-bridge`). Logs: `/tmp/figmosha-bridge.log`.
 
 If the plugin isn't connected: tell the user — `Plugins → Development → Figmosha → Run`.
 
@@ -42,7 +42,7 @@ The plugin runtime exposes a small helper namespace. Use these to keep scripts s
 | `h.findAllByName(root, name)` | All descendants by exact name |
 | `h.dumpTree(node, {maxDepth, showSize, showText})` | Indented tree string |
 | `await h.withFonts(root, asyncFn)` | Loads every unique font in subtree, then runs `asyncFn` |
-| `await h.setText(node, text)` | Set TEXT node chars with auto font load |
+| `await h.setText(node, text)` | Set TEXT node chars with auto font load (mixed-font nodes too) |
 | `h.cloneNext(node, {direction, gap, name})` | Clone + place adjacent (`right`/`left`/`up`/`down`) |
 | `await h.variant(instance, props)` | Wrapper around `instance.setProperties(...)` |
 | `await h.variantsOf(instance)` | `{ current, groups, all }` for the component set |
@@ -50,6 +50,10 @@ The plugin runtime exposes a small helper namespace. Use these to keep scripts s
 | `await h.var_(idOrKey)` | Resolve a variable from id or instance |
 | `await h.importComp(key)` | `figma.importComponentByKeyAsync(key)` |
 | `await h.importVar(key)` | `figma.variables.importVariableByKeyAsync(key)` |
+| `h.roundOutline(target, {ratio, radius, weight, stroke, align})` | Round to `width/ratio` (default 6) + outline stroke; `target` omitted = current selection |
+| `h.fillSolid(target, color)` | Paint a flat fill (white by default); `target` omitted = current selection |
+| `h.scaleToWidth(target, width)` | `rescale()` so width is exactly `width` (default 375), proportionally |
+| `await h.setFont(target, {family, style})` | Set one font on every TEXT in the subtree; missing fonts skip only their own nodes |
 
 **Use them.** Compared to inline boilerplate, helpers save ~70% of the script and avoid common mistakes (frozen `node.fills`, missing `loadFontAsync`, etc.).
 
@@ -100,6 +104,10 @@ await h.withFonts(root, async () => {
 | `figmosha clone <id> --right --gap 100` | `h.cloneNext(n, {direction:'right',gap:100})` | Duplicate adjacent |
 | `figmosha rm <id>` | `n.remove()` | Delete |
 | `figmosha icomp <key>` | `(await h.importComp(key)).createInstance()` | Pull from library |
+| `figmosha outline [<id>...]` | `h.roundOutline(...)` | Round + white outline; no id = selection |
+| `figmosha fill [<id>...] --color RRGGBB` | `h.fillSolid(...)` | Flat fill, white by default |
+| `figmosha scale [<id>...] --width 375` | `h.scaleToWidth(...)` | Proportional rescale to a target width |
+| `figmosha font sfpro\|montserrat\|'Family/Style' [<id>...]` | `h.setFont(...)` | Restyle every text node in the selection |
 
 Use subcommands when the op fits one of these. Fall back to `exec` for anything else.
 
@@ -118,11 +126,19 @@ The bridge **adds a `hint` field** when it recognizes a common error (fills/stro
 
 ## Conventions
 
+### Start from the master page
+
+**Before building a new screen or variant, look for its base on the `master 🟢` page (`0:1`) and clone that.** Master is the shipped source of truth; frames on `in design` / `in development` are drafts and are often stale (old copy, old components, other markets).
+
+- Search master first — by frame name, a key text (`findAll` on `TEXT` `characters`), or a component instance.
+- Master is read-only: clone it, then move the clone to the working page (`await page.loadAsync()` on both, then `targetPage.appendChild(copy)`). Never edit a master frame.
+- Only fall back to a draft page when master has no match — and say which frame you started from and why.
+
 ### Never edit the user's frame — always work on a duplicate
 
 **Rule: any change to existing design goes onto a clone, never the original.** The user's frame is the reference they compare against; Figma undo doesn't survive a plugin session, so an in-place edit is effectively unrecoverable.
 
-**The duplicate stays on the same page as the original — always the `figmosha` page (`32907:1962`).** That page is the scratch space; every frame you create, clone, or edit belongs there and nowhere else.
+**The duplicate goes where the user asked; with no place named, it goes on the `figmosha` page (`32907:1962`).** "Here" plus a screenshot of a section means that section. `figmosha` is the default scratch space, not a hard rule. Either way the copy sits next to its source or in a named section, never loose.
 
 Never use `figma.currentPage.appendChild()` for this. `figma.currentPage` is whatever page the user last clicked in the Figma UI — it drifts between execs — so that call silently *moves* the clone onto an unrelated page. `clone()` already places the copy as a sibling of the source; just reposition it, or append to the source's own parent explicitly.
 
@@ -333,6 +349,16 @@ open('frame.png','wb').write(base64.b64decode(b+'='*(-len(b)%4)))
 
 Crop with PIL to inspect a specific region (a bar, a header) instead of squinting at a 1600px-tall export.
 
+## Gotchas (each one cost a rebuild)
+
+- **An emptied GROUP deletes itself.** Moving a group's last child out removes the group; calling `remove()` on it afterwards throws. Check `g.removed` first.
+- **`figma.createFrame()` / `createText()` land on `figma.currentPage`**, which is whatever page the user is looking at. Append the node to its real parent on the very next line, or a failed exec leaves an orphan on an unrelated page.
+- **A failed exec is not rolled back.** Everything before the throw stays. Before retrying, find and remove what the partial run created (only your own nodes), or make the script resumable.
+- **Hug width and a line limit don't mix.** `textTruncation` and `maxLines` are silently disabled on `WIDTH_AND_HEIGHT` text. For "wrap to 2 lines when too long", use hug + `maxWidth`; a fixed width gives a real `maxLines`. Changing `textAutoResize` resets both, so set them last.
+- **A big exec result drops the plugin.** Several MB of base64 (a batch export) disconnects it mid-request. Export one node per exec and decode on the Mac side.
+- **Section exports carry extra margin.** Don't crop a section PNG by frame coordinates; export each frame on its own.
+- **`scrollAndZoomIntoView` needs the right page first**: `await figma.setCurrentPageAsync(page)`, then set the selection and zoom. Use it when the user asks to "show me".
+
 ## When something looks wrong
 
 - **`plugin not connected` (503)**: plugin window closed in Figma. Ask user to Run it again.
@@ -344,6 +370,10 @@ Crop with PIL to inspect a specific region (a bar, a header) instead of squintin
 The error response includes a `hint` field for common cases — read it before debugging.
 
 ## Where things live (user's setup)
+
+**This Mac (current):** the bridge runs locally from this repo: `./venv/bin/python bridge.py` (the only dependency is `aiohttp`, in `./venv`), listening on `127.0.0.1:8787`. Figma Desktop on the same Mac connects to `ws://localhost:8787/plugin`. After editing `plugin/*`, re-Run the plugin in Figma (re-Import if `manifest.json` changed); there's no sync step. `/status` can flicker to `false` while the plugin reconnects (every 2s), so check with a real `exec`.
+
+**WSL (older setup)**, only when working from that machine:
 
 - Bridge: `~/figmosha2/` on WSL Ubuntu at `192.168.31.105` (passwordless ssh as `user`)
 - Plugin source: `~/figmosha2/plugin/`

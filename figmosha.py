@@ -38,7 +38,7 @@ PORT = 8787
 
 KNOWN_CMDS = {
     "exec", "status", "tree", "find", "text", "variant",
-    "clone", "rm", "import-component", "icomp",
+    "clone", "rm", "import-component", "icomp", "outline", "scale", "font", "fill",
 }
 
 
@@ -215,6 +215,75 @@ def cmd_clone(args):
     return _emit(_exec(code, args.timeout)[1], raw=args.raw)
 
 
+def cmd_outline(args):
+    opts = {}
+    if args.ratio is not None:
+        opts["ratio"] = args.ratio
+    if args.radius is not None:
+        opts["radius"] = args.radius
+    if args.weight is not None:
+        opts["weight"] = args.weight
+    if args.no_stroke:
+        opts["stroke"] = None
+    target = json.dumps(args.node_id) if args.node_id else "null"
+    code = (
+        f"const ids = {target};"
+        f"let target = null;"
+        f"if (ids) {{ target = []; for (const i of ids) {{"
+        f"  const n = await figma.getNodeByIdAsync(i);"
+        f"  if (!n) throw new Error('node not found: ' + i);"
+        f"  target.push(n); }} }}"
+        f"return h.roundOutline(target, {json.dumps(opts)});"
+    )
+    return _emit(_exec(code, args.timeout)[1], raw=args.raw)
+
+
+def _targets(node_ids):
+    if not node_ids:
+        return "null"
+    return (
+        "await (async () => { const t = []; for (const i of "
+        + json.dumps(node_ids)
+        + ") { const n = await figma.getNodeByIdAsync(i);"
+        + " if (!n) throw new Error('node not found: ' + i); t.push(n); } return t; })()"
+    )
+
+
+def cmd_fill(args):
+    color = "null"
+    if args.color:
+        h = args.color.lstrip("#")
+        if len(h) != 6:
+            raise SystemExit("--color expects RRGGBB")
+        r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+        color = json.dumps({"r": r, "g": g, "b": b})
+    code = f"return h.fillSolid({_targets(args.node_id)}, {color});"
+    return _emit(_exec(code, args.timeout)[1], raw=args.raw)
+
+
+def cmd_scale(args):
+    code = f"return h.scaleToWidth({_targets(args.node_id)}, {args.width});"
+    return _emit(_exec(code, args.timeout)[1], raw=args.raw)
+
+
+FONT_PRESETS = {
+    "sfpro": {"family": "SF Pro Display", "style": "Regular"},
+    "montserrat": {"family": "Montserrat", "style": "Bold Italic"},
+}
+
+
+def cmd_font(args):
+    if args.font in FONT_PRESETS:
+        font = FONT_PRESETS[args.font]
+    elif "/" in args.font:
+        family, style = args.font.split("/", 1)
+        font = {"family": family, "style": style}
+    else:
+        font = {"family": args.font, "style": "Regular"}
+    code = f"return await h.setFont({_targets(args.node_id)}, {json.dumps(font)});"
+    return _emit(_exec(code, args.timeout)[1], raw=args.raw)
+
+
 def cmd_rm(args):
     code = (
         f"const n = await figma.getNodeByIdAsync({json.dumps(args.node_id)});"
@@ -297,6 +366,29 @@ def build_parser():
     _add_common_flags(p_rm)
     p_rm.add_argument("node_id")
 
+    p_outline = sub.add_parser("outline")
+    _add_common_flags(p_outline)
+    p_outline.add_argument("node_id", nargs="*")
+    p_outline.add_argument("--ratio", type=float)
+    p_outline.add_argument("--radius", type=float)
+    p_outline.add_argument("--weight", type=float)
+    p_outline.add_argument("--no-stroke", action="store_true")
+
+    p_fill = sub.add_parser("fill")
+    _add_common_flags(p_fill)
+    p_fill.add_argument("node_id", nargs="*")
+    p_fill.add_argument("--color", help="RRGGBB (default white)")
+
+    p_scale = sub.add_parser("scale")
+    _add_common_flags(p_scale)
+    p_scale.add_argument("node_id", nargs="*")
+    p_scale.add_argument("--width", type=float, default=375)
+
+    p_font = sub.add_parser("font")
+    _add_common_flags(p_font)
+    p_font.add_argument("font", help="sfpro | montserrat | 'Family/Style'")
+    p_font.add_argument("node_id", nargs="*")
+
     for name in ("import-component", "icomp"):
         p = sub.add_parser(name)
         _add_common_flags(p)
@@ -334,6 +426,10 @@ def main():
         "variant": cmd_variant,
         "clone": cmd_clone,
         "rm": cmd_rm,
+        "outline": cmd_outline,
+        "scale": cmd_scale,
+        "fill": cmd_fill,
+        "font": cmd_font,
         "import-component": cmd_import_component,
         "icomp": cmd_import_component,
     }

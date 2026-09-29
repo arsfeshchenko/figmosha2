@@ -4,10 +4,23 @@
   "api": "1.0.0",
   "main": "code.js",
   "ui": "ui.html",
-  "editorType": ["figma", "figjam"],
-  "permissions": ["teamlibrary", "activeusers", "fileusers", "currentuser"],
+  "editorType": [
+    "figma",
+    "figjam"
+  ],
+  "permissions": [
+    "teamlibrary",
+    "activeusers",
+    "fileusers",
+    "currentuser"
+  ],
   "networkAccess": {
-    "allowedDomains": ["http://localhost:8787", "ws://localhost:8787"],
-    "reasoning": "Local bridge to the Figmosha CLI server running on the user's machine."
+    "allowedDomains": [
+      "http://localhost:8787",
+      "ws://localhost:8787",
+      "https://fonts.googleapis.com",
+      "https://fonts.gstatic.com"
+    ],
+    "reasoning": "Local bridge to the Figmosha CLI server running on the user's machine. Google Fonts loads Montserrat so the font button previews the real typeface."
   }
 }

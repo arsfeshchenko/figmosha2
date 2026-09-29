@@ -1,15 +1,7 @@
-figma.showUI(__html__, { width: 360, height: 260, title: "Figmosha" });
+figma.showUI(__html__, { width: 240, height: 32, title: "Figmosha" });
 
-// Window sizes for the two UI modes. Compact keeps only the connection dot visible.
-const UI_SIZE = { full: { w: 360, h: 260 }, compact: { w: 220, h: 28 } };
-
-// Restore the mode the user left the plugin in.
-(async () => {
-  let compact = false;
-  try { compact = !!(await figma.clientStorage.getAsync("compactMode")); } catch (e) {}
-  if (compact) figma.ui.resize(UI_SIZE.compact.w, UI_SIZE.compact.h);
-  figma.ui.postMessage({ type: "init-mode", compact });
-})();
+// The plugin only ever shows the compact strip: connection dot + refresh.
+figma.ui.postMessage({ type: "init-mode", compact: true });
 
 function safeStringify(value) {
   if (value === undefined) return null;
@@ -106,21 +98,26 @@ const HELPERS = {
     const seen = new Set();
     const fonts = [];
     for (const t of texts) {
-      if (typeof t.fontName === "symbol") continue;
-      const fn = t.fontName;
-      const key = fn.family + "|" + fn.style;
-      if (!seen.has(key)) { seen.add(key); fonts.push(fn); }
+      // mixed-font nodes report a symbol; read every range's font instead of skipping them
+      const list = typeof t.fontName === "symbol"
+        ? t.getRangeAllFontNames(0, t.characters.length)
+        : [t.fontName];
+      for (const fn of list) {
+        const key = fn.family + "|" + fn.style;
+        if (!seen.has(key)) { seen.add(key); fonts.push(fn); }
+      }
     }
     await Promise.all(fonts.map((f) => figma.loadFontAsync(f)));
     return await asyncFn();
   },
 
-  // Set a text node's characters with auto font load (single-font texts only)
+  // Set a text node's characters with auto font load (mixed-font nodes included;
+  // the new text takes the first character's style, as Figma does)
   async setText(node, text) {
-    if (typeof node.fontName === "symbol") {
-      throw new Error("h.setText: text '" + node.name + "' has mixed fonts; load each range manually");
-    }
-    await figma.loadFontAsync(node.fontName);
+    const fonts = typeof node.fontName === "symbol"
+      ? node.getRangeAllFontNames(0, node.characters.length)
+      : [node.fontName];
+    await Promise.all(fonts.map((f) => figma.loadFontAsync(f)));
     node.characters = text;
   },
 
@@ -155,6 +152,100 @@ const HELPERS = {
       : { current: main.name, groups: null, all: null };
   },
 
+  // Round + outline (ported from the Birb Toolbox plugin).
+  // Radius defaults to width/ratio (6); pass `radius` to set it explicitly,
+  // `stroke: null` to skip the outline. Defaults to the whole selection.
+  roundOutline(target, opts) {
+    opts = opts || {};
+    const ratio  = opts.ratio  == null ? 6 : opts.ratio;
+    const weight = opts.weight == null ? 4 : opts.weight;
+    const align  = opts.align  || "OUTSIDE";
+    const stroke = opts.stroke === undefined
+      ? { r: 1, g: 1, b: 1 }
+      : opts.stroke;
+
+    let nodes;
+    if (!target) nodes = figma.currentPage.selection.slice();
+    else if (Array.isArray(target)) nodes = target;
+    else nodes = [target];
+
+    const done = [];
+    for (const n of nodes) {
+      if (!("cornerRadius" in n) || typeof n.width !== "number") continue;
+      n.cornerRadius = opts.radius == null ? Math.round(n.width / ratio) : opts.radius;
+      if (stroke) {
+        n.strokes = [{ type: "SOLID", color: stroke, opacity: 1 }];
+        n.strokeWeight = weight;
+        n.strokeAlign = align;
+      }
+      done.push({ id: n.id, name: n.name, radius: n.cornerRadius });
+    }
+    return done;
+  },
+
+  // Paint nodes a flat colour (white by default).
+  fillSolid(target, color) {
+    const c = color || { r: 1, g: 1, b: 1 };
+    const nodes = !target ? figma.currentPage.selection.slice()
+                : Array.isArray(target) ? target : [target];
+    const done = [];
+    for (const n of nodes) {
+      if (!("fills" in n)) continue;
+      n.fills = [{ type: "SOLID", color: c, opacity: 1 }];
+      done.push({ id: n.id, name: n.name });
+    }
+    return done;
+  },
+
+  // Scale nodes so their width is exactly `width`, proportionally
+  // (rescale = the scale tool: children, text and strokes scale too).
+  scaleToWidth(target, width) {
+    const w = width == null ? 375 : width;
+    const nodes = !target ? figma.currentPage.selection.slice()
+                : Array.isArray(target) ? target : [target];
+    const done = [], skipped = [];
+    for (const n of nodes) {
+      if (!("rescale" in n) || typeof n.width !== "number" || n.width === 0) continue;
+      try { n.rescale(w / n.width); done.push({ id: n.id, name: n.name, width: Math.round(n.width) }); }
+      catch (e) { skipped.push({ id: n.id, name: n.name, reason: String(e.message || e) }); }
+    }
+    return { scaled: done, skipped };
+  },
+
+  // Set one font on every TEXT node in the selection/subtree.
+  // Fonts missing locally only disqualify the nodes that use them.
+  async setFont(target, fontName) {
+    const roots = !target ? figma.currentPage.selection.slice()
+                : Array.isArray(target) ? target : [target];
+    const texts = [];
+    const collect = (n) => {
+      if (n.type === "TEXT") texts.push(n);
+      else if ("children" in n) for (const c of n.children) collect(c);
+    };
+    for (const r of roots) collect(r);
+    if (!texts.length) return { updated: 0, skipped: 0, reason: "no text nodes" };
+
+    const key = (f) => f.family + " " + f.style;
+    const per = texts.map((t) => t.getRangeAllFontNames(0, t.characters.length));
+    const toLoad = new Map([[key(fontName), fontName]]);
+    for (const fonts of per) for (const f of fonts) toLoad.set(key(f), f);
+
+    const failed = new Set();
+    await Promise.all([...toLoad].map(([k, f]) =>
+      figma.loadFontAsync(f).catch(() => failed.add(k))
+    ));
+    if (failed.has(key(fontName))) {
+      throw new Error("font not available: " + key(fontName));
+    }
+    let updated = 0;
+    texts.forEach((t, i) => {
+      if (per[i].some((f) => failed.has(key(f)))) return;
+      t.fontName = fontName;
+      updated++;
+    });
+    return { updated, skipped: texts.length - updated };
+  },
+
   // Quick async accessors
   async node(id)      { return await figma.getNodeByIdAsync(id); },
   async var_(idOrKey) { return await resolveVar(idOrKey); },
@@ -165,10 +256,34 @@ const HELPERS = {
 // ──────────────────────────────────────────────────────────────────────────
 
 figma.ui.onmessage = async (msg) => {
-  if (msg.type === "ui-mode") {
-    const s = msg.compact ? UI_SIZE.compact : UI_SIZE.full;
-    figma.ui.resize(s.w, s.h);
-    try { await figma.clientStorage.setAsync("compactMode", !!msg.compact); } catch (e) {}
+  // Toolbox actions fired from the compact strip.
+  if (msg.type === "act") {
+    try {
+      if (msg.action === "round-stroke") {
+        const d = HELPERS.roundOutline();
+        figma.notify(d.length ? d.length + (d.length === 1 ? " shape rounded" : " shapes rounded")
+                              : "Select a frame, component or rectangle first");
+      } else if (msg.action === "fill-white") {
+        const d = HELPERS.fillSolid();
+        figma.notify(d.length ? d.length + (d.length === 1 ? " layer filled white" : " layers filled white")
+                              : "Select something that can take a fill");
+      } else if (msg.action === "scale-375") {
+        const r = HELPERS.scaleToWidth(null, 375);
+        figma.notify(!r.scaled.length && !r.skipped.length ? "Select a frame, image or shape first"
+          : r.skipped.length ? r.scaled.length + " scaled to 375px, " + r.skipped.length + " skipped"
+          : r.scaled.length + " scaled to 375px wide");
+      } else if (msg.action === "font-sfpro" || msg.action === "font-montserrat") {
+        const font = msg.action === "font-sfpro"
+          ? { family: "SF Pro Display", style: "Regular" }
+          : { family: "Montserrat", style: "Bold Italic" };
+        const r = await HELPERS.setFont(null, font);
+        figma.notify(r.reason ? "Select some text first"
+          : r.skipped ? r.updated + " updated, " + r.skipped + " skipped (missing fonts)"
+          : r.updated + (r.updated === 1 ? " layer updated" : " layers updated"));
+      }
+    } catch (e) { figma.notify(String(e.message || e), { error: true }); }
+    // Without this, every click since the panel opened collapses into one undo step.
+    figma.commitUndo();
     return;
   }
   if (msg.type !== "exec") return;

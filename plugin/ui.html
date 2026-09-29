@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html>
 <head>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@1,700&display=swap">
 <style>
   :root {
     --bg: #171717;
@@ -20,9 +22,9 @@
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
   #state { font-weight: 600; }
   #server { color: var(--muted); font-size: 11px; margin-left: auto; }
-  #toggle, #refresh { flex: none; border: 1px solid var(--line); background: transparent; border-radius: 5px; width: 24px; height: 24px;
+  #refresh { flex: none; border: 1px solid var(--line); background: transparent; border-radius: 5px; width: 24px; height: 24px;
             cursor: pointer; font-size: 12px; line-height: 1; color: var(--muted); padding: 0; }
-  #toggle:hover, #refresh:hover { background: var(--surface); color: var(--text); }
+  #refresh:hover { background: var(--surface); color: var(--text); }
   #refresh { font-size: 14px; }
   #refresh.spin { animation: spin .6s linear; }
   @keyframes spin { from { transform: rotate(0) } to { transform: rotate(360deg) } }
@@ -35,23 +37,47 @@
      The native title bar can't be drawn into (it's Figma chrome, and changing its
      title needs showUI() again, which reloads the iframe and drops the socket),
      so instead we collapse to the smallest strip that still shows the dot. */
-  body.compact { padding: 0 8px; height: 28px; display: flex; align-items: center; }
+  body.compact { padding: 0 7px; height: 32px; display: flex; align-items: center;
+    border: 1px solid var(--line); border-radius: 8px; box-sizing: border-box; }
+  body.compact .bar { display: none; }
+  body.compact .acts { display: flex; align-items: center; gap: 4px; width: 100%; }
+  body.compact .acts .act { flex: 1; height: 22px; display: flex; align-items: center; justify-content: center; }
+  .mark { font-size: 12px; line-height: 1; letter-spacing: -0.01em; }
+  .mark-w { font-size: 10px; font-weight: 600; letter-spacing: -0.02em; }
+  .mark-sf { font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-weight: 500; }
+  .mark-mont { font-family: Montserrat, 'Helvetica Neue', Arial, sans-serif; font-style: italic; font-weight: 700; }
   body.compact #server, body.compact #log { display: none; }
-  body.compact .bar { margin: 0; width: 100%; gap: 6px; }
+  body.compact .bar { margin: 0; width: 100%; gap: 6px; display: flex; align-items: center; height: 20px; }
   body.compact #dot { width: 8px; height: 8px; }
-  body.compact #state { font-size: 11px; font-weight: 400; color: var(--muted); }
-  body.compact #refresh { margin-left: auto; width: 18px; height: 18px; font-size: 12px; border: none; background: transparent; }
-  body.compact #toggle { width: 18px; height: 18px; font-size: 11px; border: none; background: transparent; }
-  body.compact #refresh:hover, body.compact #toggle:hover { background: var(--surface); }
+  body.compact #state { display: none; }
+  body.compact .act { padding: 0 5px; border: none; background: transparent;
+    color: var(--muted); font-size: 10px; font-weight: 600; border-radius: 4px; cursor: pointer; }
+  body.compact .act:hover { background: var(--surface); color: var(--text); }
+  body.compact #refresh { margin-right: 4px; width: 18px; height: 18px; font-size: 12px; border: none; background: transparent; }
 </style>
 </head>
-<body>
-  <div class="bar">
+<body class="compact">
+  <div class="acts">
     <span id="dot" class="pending"></span>
+    <button id="refresh" title="Reconnect to bridge">&#8635;</button>
+    <button class="act" data-act="round-stroke" title="Round + white stroke">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <rect x="2.75" y="2.75" width="10.5" height="10.5" rx="3.5"
+              fill="currentColor" fill-opacity=".28" stroke="#fff" stroke-width="1.5"/>
+      </svg>
+    </button>
+    <button class="act" data-act="fill-white" title="Fill with white">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <rect x="2.75" y="2.75" width="10.5" height="10.5" rx="3.5" fill="#fff"/>
+      </svg>
+    </button>
+    <button class="act" data-act="scale-375" title="Scale to 375 wide"><span class="mark mark-w">375w</span></button>
+    <button class="act" data-act="font-sfpro" title="SF Pro Display"><span class="mark mark-sf">birb</span></button>
+    <button class="act" data-act="font-montserrat" title="Montserrat Bold Italic"><span class="mark mark-mont">birb</span></button>
+  </div>
+  <div class="bar">
     <span id="state">connecting…</span>
     <span id="server">ws://localhost:8787/plugin</span>
-    <button id="refresh" title="Reconnect to bridge">&#8635;</button>
-    <button id="toggle" title="Compact mode">–</button>
   </div>
   <pre id="log">[ui] booting</pre>
 
@@ -60,11 +86,13 @@ const SERVER = "ws://localhost:8787/plugin";
 const dotEl = document.getElementById("dot");
 const stateEl = document.getElementById("state");
 const logEl = document.getElementById("log");
-const toggleEl = document.getElementById("toggle");
 const refreshEl = document.getElementById("refresh");
+for (const b of document.querySelectorAll(".act")) {
+  b.onclick = () => parent.postMessage({ pluginMessage: { type: "act", action: b.dataset.act } }, "*");
+}
 let ws = null;
 let reconnectTimer = null;
-let compact = false;
+const compact = true;   // the plugin has no expanded view
 let superseded = false;   // set when the bridge hands the seat to a newer instance
 const recentLog = [];
 
@@ -82,15 +110,10 @@ function setStatus(text, cls) {
   document.body.dataset.state = text;   // compact mode renders this via ::after
 }
 
-function applyMode(next, persist) {
-  compact = next;
-  document.body.classList.toggle("compact", compact);
-  toggleEl.textContent = compact ? "+" : "–";
-  toggleEl.title = compact ? "Expand" : "Compact mode";
-  if (persist) parent.postMessage({ pluginMessage: { type: "ui-mode", compact } }, "*");
+function applyMode() {
+  document.body.classList.add("compact");
 }
 
-toggleEl.onclick = () => applyMode(!compact, true);
 
 // Force a fresh socket. Detach the handlers first so the old ws's onclose can't
 // schedule a competing reconnect on top of the one we're starting here.
@@ -171,7 +194,7 @@ window.onmessage = (e) => {
   if (!m) return;
 
   // From code.js on boot — restore the saved mode without re-persisting it.
-  if (m.type === "init-mode") { applyMode(!!m.compact, false); return; }
+  if (m.type === "init-mode") { applyMode(); return; }
 
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     log(`[drop] ws not open, ${m.type} id=${shortId(m.id)}`);
