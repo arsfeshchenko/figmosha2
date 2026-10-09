@@ -142,7 +142,7 @@ The bridge **adds a `hint` field** when it recognizes a common error (fills/stro
 
 **Rule: any change to existing design goes onto a clone, never the original.** The user's frame is the reference they compare against; Figma undo doesn't survive a plugin session, so an in-place edit is effectively unrecoverable.
 
-**The duplicate goes where the user asked; with no place named, it goes on the `figmosha` page (`32907:1962`).** "Here" plus a screenshot of a section means that section. `figmosha` is the default scratch space, not a hard rule. Either way the copy sits next to its source or in a named section, never loose.
+**The new version goes side by side with its reference, in the same section.** When the user points at a section ("here", "in this section", a screenshot of it) and asks for changes or a new take, add it to the right of what's already there — same top edge, ~80px gap — and grow the section if it no longer fits. Never replace or cover the reference. Only with no section or place in sight does the work fall back to the `figmosha` page (`32907:1962`). Either way the copy sits next to its source or in a named section, never loose.
 
 Never use `figma.currentPage.appendChild()` for this. `figma.currentPage` is whatever page the user last clicked in the Figma UI — it drifts between execs — so that call silently *moves* the clone onto an unrelated page. `clone()` already places the copy as a sibling of the source; just reposition it, or append to the source's own parent explicitly.
 
@@ -246,6 +246,10 @@ sec.appendChild(frameB); frameB.x = 575; frameB.y = 80
 - **Size the section yourself** — it does not hug its contents. Leave ~80px padding so the label doesn't collide with the frames.
 - **Check for overlap** with the section's new siblings before reporting done, and grow the parent if needed.
 - **Prototype reactions survive reparenting** — verify anyway, with `node.reactions`.
+
+### Sizes, padding and gaps are multiples of 8
+
+Every width, height, padding, `itemSpacing` and offset you set lands on the 8 grid (8, 16, 24, 32…) — not 4, not 12. Scaling an instance by a ratio is the usual leak: an 11px badge rescaled by 32/24 comes out 14.67. Pick the on-grid target (16) and scale to it, not by the ratio. Text sizes and line heights follow the text styles, not this rule.
 
 ### Corner radius is a multiple of 8
 
@@ -364,7 +368,7 @@ Crop with PIL to inspect a specific region (a bar, a header) instead of squintin
 - **An emptied GROUP deletes itself.** Moving a group's last child out removes the group; calling `remove()` on it afterwards throws. Check `g.removed` first.
 - **`figma.createFrame()` / `createText()` land on `figma.currentPage`**, which is whatever page the user is looking at. Append the node to its real parent on the very next line, or a failed exec leaves an orphan on an unrelated page.
 - **A failed exec is not rolled back.** Everything before the throw stays. Before retrying, find and remove what the partial run created (only your own nodes), or make the script resumable.
-- **Hug width and a line limit don't mix.** `textTruncation` and `maxLines` are silently disabled on `WIDTH_AND_HEIGHT` text. For "wrap to 2 lines when too long", use hug + `maxWidth`; a fixed width gives a real `maxLines`. Changing `textAutoResize` resets both, so set them last.
+- **Hug width and a line limit don't mix.** `textTruncation` and `maxLines` are silently disabled on `WIDTH_AND_HEIGHT` text. For "wrap to 2 lines when too long", use hug + `maxWidth`; a fixed width gives a real `maxLines`. Changing `textAutoResize` resets both, so set them last — and set `textTruncation` *before* `maxLines`: setting truncation snaps `maxLines` back to 1.
 - **A big exec result drops the plugin.** Several MB of base64 (a batch export) disconnects it mid-request. Export one node per exec and decode on the Mac side.
 - **`absoluteRenderBounds` is clipped by clipping ancestors and lags within one exec.** A node sticking out of a `clipsContent` frame reports its edge *at* the frame edge, so "is it inside the margin?" always passes. Compute the corners from `absoluteTransform` × size (+ stroke) instead.
 - **Section exports carry extra margin.** Don't crop a section PNG by frame coordinates; export each frame on its own.

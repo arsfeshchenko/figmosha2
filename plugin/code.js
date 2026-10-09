@@ -237,7 +237,8 @@ const HELPERS = {
   // Wrap each layer in its own auto-layout "sticker": #000050 fill, white outside
   // stroke, rounded corners. Sizes scale with the content — the font size for text,
   // the height otherwise — from the carousel title at 64px (padding 30/45,
-  // stroke 8.5, radius 53). The layer keeps its place; a tilt moves to the sticker.
+  // stroke 8.5, radius 53). Padding and radius snap to the 8 grid (min 8); the
+  // stroke doesn't. The layer keeps its place; a tilt moves to the sticker.
   async sticker(target) {
     const nodes = !target ? figma.currentPage.selection.slice()
                 : Array.isArray(target) ? target : [target];
@@ -253,8 +254,9 @@ const HELPERS = {
 
       const base = n.type === "TEXT" && typeof n.fontSize === "number" ? n.fontSize : n.height;
       const k = base / 64;
-      const padV = Math.round(30 * k), padH = Math.round(45 * k);
-      const stroke = Math.max(1, +(8.5 * k).toFixed(1)), radius = Math.round(53 * k);
+      const snap8 = (v) => Math.max(8, Math.round(v / 8) * 8);
+      const padV = snap8(30 * k), padH = snap8(45 * k);
+      const stroke = Math.max(1, +(8.5 * k).toFixed(1)), radius = snap8(53 * k);
 
       const parent = n.parent, index = parent.children.indexOf(n);
       const inFlow = "layoutMode" in parent && parent.layoutMode !== "NONE" && n.layoutPositioning !== "ABSOLUTE";
