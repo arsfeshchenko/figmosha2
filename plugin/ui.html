@@ -40,6 +40,7 @@
   body.compact { padding: 0 7px; height: 32px; display: flex; align-items: center;
     border: 1px solid var(--line); border-radius: 8px; box-sizing: border-box; }
   body.compact .bar { display: none; }
+  body { -webkit-user-select: none; user-select: none; }   /* clicks on labels must not select them */
   body.compact .acts { display: flex; align-items: center; gap: 4px; width: 100%; }
   body.compact .acts .act { flex: 1; height: 22px; display: flex; align-items: center; justify-content: center; }
   .mark { font-size: 12px; line-height: 1; letter-spacing: -0.01em; }
@@ -74,6 +75,19 @@
     <button class="act" data-act="scale-375" title="Scale to 375 wide"><span class="mark mark-w">375w</span></button>
     <button class="act" data-act="font-sfpro" title="SF Pro Display"><span class="mark mark-sf">birb</span></button>
     <button class="act" data-act="font-montserrat" title="Montserrat Bold Italic"><span class="mark mark-mont">birb</span></button>
+    <button class="act" data-act="gradient" title="Add #000050 gradient, 0% to 100%">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <defs><linearGradient id="g-navy" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#000050" stop-opacity="0"/><stop offset="1" stop-color="#000050" stop-opacity="1"/>
+        </linearGradient></defs>
+        <rect x="3.25" y="1.75" width="9.5" height="12.5" rx="2" fill="url(#g-navy)" stroke="#fff" stroke-opacity=".6"/>
+      </svg>
+    </button>
+    <button class="act" data-act="sticker" title="Wrap in a sticker">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <rect x="1.75" y="4.25" width="12.5" height="7.5" rx="3.75" fill="#000050" stroke="#fff" stroke-width="1.5"/>
+      </svg>
+    </button>
   </div>
   <div class="bar">
     <span id="state">connecting…</span>

@@ -53,6 +53,8 @@ The plugin runtime exposes a small helper namespace. Use these to keep scripts s
 | `h.roundOutline(target, {ratio, radius, weight, stroke, align})` | Round to `width/ratio` (default 6) + outline stroke; `target` omitted = current selection |
 | `h.fillSolid(target, color)` | Paint a flat fill (white by default); `target` omitted = current selection |
 | `h.scaleToWidth(target, width)` | `rescale()` so width is exactly `width` (default 375), proportionally |
+| `h.gradientRect()` | 375×812 rectangle at the viewport centre, #000050 linear gradient 0% (top) → 100% (bottom), selected |
+| `await h.sticker(target)` | Wrap each layer in an auto-layout sticker: #000050 fill (bound to `bird-blue`), white outside stroke, rounded; sizes scale with the font size (text) or height; `target` omitted = selection |
 | `await h.setFont(target, {family, style})` | Set one font on every TEXT in the subtree; missing fonts skip only their own nodes |
 
 **Use them.** Compared to inline boilerplate, helpers save ~70% of the script and avoid common mistakes (frozen `node.fills`, missing `loadFontAsync`, etc.).
@@ -107,6 +109,8 @@ await h.withFonts(root, async () => {
 | `figmosha outline [<id>...]` | `h.roundOutline(...)` | Round + white outline; no id = selection |
 | `figmosha fill [<id>...] --color RRGGBB` | `h.fillSolid(...)` | Flat fill, white by default |
 | `figmosha scale [<id>...] --width 375` | `h.scaleToWidth(...)` | Proportional rescale to a target width |
+| `figmosha gradient` | `h.gradientRect()` | Drop a navy 0→100% gradient rect at the viewport centre |
+| `figmosha sticker [<id>...]` | `h.sticker(...)` | Wrap layers in a navy sticker; no id = selection |
 | `figmosha font sfpro\|montserrat\|'Family/Style' [<id>...]` | `h.setFont(...)` | Restyle every text node in the selection |
 
 Use subcommands when the op fits one of these. Fall back to `exec` for anything else.
@@ -243,6 +247,12 @@ sec.appendChild(frameB); frameB.x = 575; frameB.y = 80
 - **Check for overlap** with the section's new siblings before reporting done, and grow the parent if needed.
 - **Prototype reactions survive reparenting** — verify anyway, with `node.reactions`.
 
+### Corner radius is a multiple of 8
+
+Every `cornerRadius` you set is a multiple of 8 (8, 16, 24, 32…); full pills stay pills (radius = height / 2). An off-grid value like 14 or 20 is a bug, even when it was cloned from an existing frame — flag it, don't copy it forward.
+
+A nested radius still has to look concentric (`inner = outer − padding`), so fix it by adjusting the padding, not by breaking the grid: a 24 card with 8 padding holds a 16 photo.
+
 ### Use the file's text styles, not raw font properties
 
 When you create or restyle a TEXT node, **attach an existing text style** rather than setting `fontName` / `fontSize` by hand. A hand-set node looks identical today and drifts the moment the style is updated — and it's invisible in the design-system audit.
@@ -356,6 +366,7 @@ Crop with PIL to inspect a specific region (a bar, a header) instead of squintin
 - **A failed exec is not rolled back.** Everything before the throw stays. Before retrying, find and remove what the partial run created (only your own nodes), or make the script resumable.
 - **Hug width and a line limit don't mix.** `textTruncation` and `maxLines` are silently disabled on `WIDTH_AND_HEIGHT` text. For "wrap to 2 lines when too long", use hug + `maxWidth`; a fixed width gives a real `maxLines`. Changing `textAutoResize` resets both, so set them last.
 - **A big exec result drops the plugin.** Several MB of base64 (a batch export) disconnects it mid-request. Export one node per exec and decode on the Mac side.
+- **`absoluteRenderBounds` is clipped by clipping ancestors and lags within one exec.** A node sticking out of a `clipsContent` frame reports its edge *at* the frame edge, so "is it inside the margin?" always passes. Compute the corners from `absoluteTransform` × size (+ stroke) instead.
 - **Section exports carry extra margin.** Don't crop a section PNG by frame coordinates; export each frame on its own.
 - **`scrollAndZoomIntoView` needs the right page first**: `await figma.setCurrentPageAsync(page)`, then set the selection and zoom. Use it when the user asks to "show me".
 

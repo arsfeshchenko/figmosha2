@@ -1,4 +1,4 @@
-figma.showUI(__html__, { width: 240, height: 32, title: "Figmosha" });
+figma.showUI(__html__, { width: 304, height: 32, title: "Figmosha" });   // 8 toolbar buttons + status dot
 
 // The plugin only ever shows the compact strip: connection dot + refresh.
 figma.ui.postMessage({ type: "init-mode", compact: true });
@@ -212,6 +212,85 @@ const HELPERS = {
     return { scaled: done, skipped };
   },
 
+  // Drop a 375×812 rectangle at the viewport centre: #000050 linear gradient,
+  // 0% at the top to 100% at the bottom (a scrim to sit behind bottom text).
+  gradientRect() {
+    const navy = { r: 0, g: 0, b: 80 / 255 };
+    const r = figma.createRectangle();
+    figma.currentPage.appendChild(r);                  // the page the user is looking at, on purpose
+    r.name = "gradient";
+    r.resize(375, 812);
+    r.fills = [{
+      type: "GRADIENT_LINEAR",
+      gradientTransform: [[0, 1, 0], [-1, 0, 1]],      // top -> bottom
+      gradientStops: [
+        { position: 0, color: Object.assign({ a: 0 }, navy) },
+        { position: 1, color: Object.assign({ a: 1 }, navy) },
+      ],
+    }];
+    const c = figma.viewport.center;
+    r.x = Math.round(c.x - r.width / 2); r.y = Math.round(c.y - r.height / 2);
+    figma.currentPage.selection = [r];
+    return { id: r.id, x: r.x, y: r.y };
+  },
+
+  // Wrap each layer in its own auto-layout "sticker": #000050 fill, white outside
+  // stroke, rounded corners. Sizes scale with the content — the font size for text,
+  // the height otherwise — from the carousel title at 64px (padding 30/45,
+  // stroke 8.5, radius 53). The layer keeps its place; a tilt moves to the sticker.
+  async sticker(target) {
+    const nodes = !target ? figma.currentPage.selection.slice()
+                : Array.isArray(target) ? target : [target];
+    const navyVar = (await figma.variables.getLocalVariablesAsync("COLOR"))
+      .find((v) => v.name === "bird-blue") || null;
+    const inSticker = (n) => { for (let p = n; p; p = p.parent) if (p.name === "sticker") return true; return false; };
+    const done = [], skipped = [], frames = [];
+    for (const n of nodes) {
+      if (!n.parent || typeof n.width !== "number" || n.type === "PAGE" || n.type === "SECTION") {
+        skipped.push({ id: n.id, name: n.name, reason: "not a layer" }); continue;
+      }
+      if (inSticker(n)) { skipped.push({ id: n.id, name: n.name, reason: "already a sticker" }); continue; }
+
+      const base = n.type === "TEXT" && typeof n.fontSize === "number" ? n.fontSize : n.height;
+      const k = base / 64;
+      const padV = Math.round(30 * k), padH = Math.round(45 * k);
+      const stroke = Math.max(1, +(8.5 * k).toFixed(1)), radius = Math.round(53 * k);
+
+      const parent = n.parent, index = parent.children.indexOf(n);
+      const inFlow = "layoutMode" in parent && parent.layoutMode !== "NONE" && n.layoutPositioning !== "ABSOLUTE";
+      const rot = n.rotation || 0;
+      const m = n.relativeTransform;                       // centre in the parent's space, before moving
+      const cx = m[0][2] + (n.width / 2) * m[0][0] + (n.height / 2) * m[0][1];
+      const cy = m[1][2] + (n.width / 2) * m[1][0] + (n.height / 2) * m[1][1];
+
+      const f = figma.createFrame();
+      parent.insertChild(index, f);                        // straight into place, never left on currentPage
+      f.name = "sticker";
+      f.layoutMode = "HORIZONTAL";
+      f.primaryAxisSizingMode = "AUTO"; f.counterAxisSizingMode = "AUTO";
+      f.primaryAxisAlignItems = "CENTER"; f.counterAxisAlignItems = "CENTER";
+      f.paddingTop = f.paddingBottom = padV; f.paddingLeft = f.paddingRight = padH;
+      f.fills = [{ type: "SOLID", color: { r: 0, g: 0, b: 80 / 255 } }];
+      if (navyVar) f.fills = [figma.variables.setBoundVariableForPaint(f.fills[0], "color", navyVar)];
+      f.strokes = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }];
+      f.strokeWeight = stroke; f.strokeAlign = "OUTSIDE";
+      f.cornerRadius = radius; f.clipsContent = false;
+      if (!inFlow && n.layoutPositioning === "ABSOLUTE") f.layoutPositioning = "ABSOLUTE";
+
+      if (rot) n.rotation = 0;
+      f.appendChild(n);
+      if (!inFlow) {                                       // same centre, same tilt as the layer had
+        const a = rot * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+        f.relativeTransform = [[c, s, cx - (f.width / 2) * c - (f.height / 2) * s],
+                               [-s, c, cy + (f.width / 2) * s - (f.height / 2) * c]];
+      }
+      frames.push(f);
+      done.push({ id: f.id, content: n.name, padding: [padV, padH], stroke, radius });
+    }
+    if (!target && frames.length) figma.currentPage.selection = frames;
+    return { created: done, skipped };
+  },
+
   // Set one font on every TEXT node in the selection/subtree.
   // Fonts missing locally only disqualify the nodes that use them.
   async setFont(target, fontName) {
@@ -235,7 +314,8 @@ const HELPERS = {
       figma.loadFontAsync(f).catch(() => failed.add(k))
     ));
     if (failed.has(key(fontName))) {
-      throw new Error("font not available: " + key(fontName));
+      // Figma lists locally installed fonts even when it can't read them; a full restart fixes that.
+      throw new Error("Can't load " + key(fontName) + ". If it's installed on this Mac, quit Figma (⌘Q) and reopen it");
     }
     let updated = 0;
     texts.forEach((t, i) => {
@@ -272,6 +352,15 @@ figma.ui.onmessage = async (msg) => {
         figma.notify(!r.scaled.length && !r.skipped.length ? "Select a frame, image or shape first"
           : r.skipped.length ? r.scaled.length + " scaled to 375px, " + r.skipped.length + " skipped"
           : r.scaled.length + " scaled to 375px wide");
+      } else if (msg.action === "gradient") {
+        HELPERS.gradientRect();
+        figma.notify("Gradient added");
+      } else if (msg.action === "sticker") {
+        const r = await HELPERS.sticker();
+        const n = r.created.length;
+        figma.notify(!n && !r.skipped.length ? "Select a layer first"
+          : !n ? "Already a sticker"
+          : n + (n === 1 ? " sticker created" : " stickers created") + (r.skipped.length ? ", " + r.skipped.length + " skipped" : ""));
       } else if (msg.action === "font-sfpro" || msg.action === "font-montserrat") {
         const font = msg.action === "font-sfpro"
           ? { family: "SF Pro Display", style: "Regular" }

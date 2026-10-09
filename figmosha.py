@@ -249,6 +249,15 @@ def _targets(node_ids):
     )
 
 
+def cmd_gradient(args):
+    return _emit(_exec("return h.gradientRect();", args.timeout)[1], raw=args.raw)
+
+
+def cmd_sticker(args):
+    code = f"return await h.sticker({_targets(args.node_id)});"
+    return _emit(_exec(code, args.timeout)[1], raw=args.raw)
+
+
 def cmd_fill(args):
     color = "null"
     if args.color:
@@ -374,6 +383,13 @@ def build_parser():
     p_outline.add_argument("--weight", type=float)
     p_outline.add_argument("--no-stroke", action="store_true")
 
+    p_gradient = sub.add_parser("gradient")
+    _add_common_flags(p_gradient)
+
+    p_sticker = sub.add_parser("sticker")
+    _add_common_flags(p_sticker)
+    p_sticker.add_argument("node_id", nargs="*")
+
     p_fill = sub.add_parser("fill")
     _add_common_flags(p_fill)
     p_fill.add_argument("node_id", nargs="*")
@@ -429,6 +445,8 @@ def main():
         "outline": cmd_outline,
         "scale": cmd_scale,
         "fill": cmd_fill,
+        "sticker": cmd_sticker,
+        "gradient": cmd_gradient,
         "font": cmd_font,
         "import-component": cmd_import_component,
         "icomp": cmd_import_component,
