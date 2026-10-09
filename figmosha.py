@@ -38,7 +38,7 @@ PORT = 8787
 
 KNOWN_CMDS = {
     "exec", "status", "tree", "find", "text", "variant",
-    "clone", "rm", "import-component", "icomp", "outline", "scale", "font", "fill",
+    "clone", "rm", "import-component", "icomp", "outline", "scale", "font", "fill", "gradient", "sticker",
 }
 
 
